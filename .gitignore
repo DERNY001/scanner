@@ -1,0 +1,10 @@
+# Bytecode & virtual environment
+__pycache__/
+*.pyc
+venv/
+
+#Environment variable & secrets
+.env
+
+#Protect proprietary strategies(anything starting with custom)
+strategies/custom_*.py
