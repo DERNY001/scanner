@@ -10,3 +10,7 @@ venv/
 strategies/custom_*.py
 .env
 __pycache__/
+.env
+venv/
+__pycache__/
+*.pyc
