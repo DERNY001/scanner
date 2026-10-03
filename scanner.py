@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from collections import deque, Counter
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 import aiohttp
 from aiohttp import web
 import websockets
@@ -20,21 +20,21 @@ WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 WINDOW_SIZE = 1000
 
 MARKET_NAMES = {
-    # 1s Continuous Volatility
+    # 1s Continuous Volatility (Fast)
     "1HZ10V": "Volatility 10 (1s) Index",
     "1HZ25V": "Volatility 25 (1s) Index",
     "1HZ50V": "Volatility 50 (1s) Index",
     "1HZ75V": "Volatility 75 (1s) Index",
     "1HZ100V": "Volatility 100 (1s) Index",
     
-    # Standard Volatility
+    # Standard Volatility (Standard)
     "R_10": "Volatility 10 Index",
     "R_25": "Volatility 25 Index",
     "R_50": "Volatility 50 Index",
     "R_75": "Volatility 75 Index",
     "R_100": "Volatility 100 Index",
     
-    # Jump Indices
+    # Jump Indices (Fast)
     "JD10": "Jump 10 Index",
     "JD25": "Jump 25 Index",
     "JD50": "Jump 50 Index",
@@ -42,6 +42,11 @@ MARKET_NAMES = {
 }
 
 SYMBOLS = list(MARKET_NAMES.keys())
+
+def get_thresholds_for_symbol(symbol: str) -> Tuple[int, int, int]:
+    if symbol.startswith("1HZ") or symbol.startswith("JD"):
+        return 120, 118, 114
+    return 119, 117, 113
 
 def load_env() -> Dict[str, str]:
     env_vars = {}
@@ -67,7 +72,12 @@ class TelegramDispatcher:
             logger.warning("Telegram alerts disabled (missing credentials).")
             return
         asyncio.create_task(self._worker())
-        await self.send(f"🟢 <b>Multi-Market Scanner Online (Render)</b>\nMonitoring {len(SYMBOLS)} Deriv indices (Adaptive Cooldown Active).")
+        await self.send(
+            f"🟢 <b>Multi-Market Scanner Updated (Render)</b>\n"
+            f"Monitoring {len(SYMBOLS)} indices.\n"
+            f"• 1s & Jump Threshold: 12.0% | 11.8% | 11.4%\n"
+            f"• Standard Vol Threshold: 11.9% | 11.7% | 11.3%"
+        )
 
     async def send(self, message: str):
         if self.enabled:
@@ -109,6 +119,7 @@ class StatisticalDigitEngine:
         self.buffer: deque[int] = deque(maxlen=window_size)
         self.processed_ticks = 0
         self.currently_qualifying = False
+        self.t1_limit, self.t2_limit, self.t3_limit = get_thresholds_for_symbol(symbol)
 
     def prime_history(self, prices: List[float], pip_size: int) -> int:
         self.buffer.clear()
@@ -148,7 +159,7 @@ class StatisticalDigitEngine:
 
         top1, top2, top3 = ranked[0], ranked[1], ranked[2]
 
-        if top1[1] >= 119 and top2[1] >= 117 and top3[1] >= 113:
+        if top1[1] >= self.t1_limit and top2[1] >= self.t2_limit and top3[1] >= self.t3_limit:
             if all(counts[d] < 100 for d in opposite_set):
                 return {
                     "category": category_name,
@@ -157,6 +168,7 @@ class StatisticalDigitEngine:
                     "top1": top1,
                     "top2": top2,
                     "top3": top3,
+                    "target_reqs": (self.t1_limit / 10.0, self.t2_limit / 10.0, self.t3_limit / 10.0),
                     "opposite_max": max(pcts[d] for d in opposite_set)
                 }
         return None
@@ -180,7 +192,6 @@ async def monitor_heartbeat(engines: Dict[str, StatisticalDigitEngine]) -> None:
         logger.info(f"📊 Live ticks ingested: {total_ticks} | {status_text}")
 
 
-# --- Web Server to Satisfy Render's Health Check & Keep Alive ---
 async def start_web_server(engines: Dict[str, StatisticalDigitEngine]):
     async def handle_ping(request):
         total_ticks = sum(e.processed_ticks for e in engines.values())
@@ -190,7 +201,6 @@ async def start_web_server(engines: Dict[str, StatisticalDigitEngine]):
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
 
-    # Render automatically provides a PORT environment variable (usually 10000)
     port = int(os.environ.get("PORT", 8080))
     runner = web.AppRunner(app)
     await runner.setup()
@@ -206,7 +216,6 @@ async def scan() -> None:
     }
 
     env = load_env()
-    # Check both OS environment (Render Dashboard) and local .env
     token = os.environ.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID") or env.get("TELEGRAM_CHAT_ID")
 
@@ -218,7 +227,6 @@ async def scan() -> None:
     subscribed_live = False
     last_alert_time: Dict[str, float] = {}
 
-    # Launch the embedded web server alongside the WebSocket scanner
     await start_web_server(engines)
 
     while True:
@@ -282,6 +290,7 @@ async def scan() -> None:
                                     if now - last_sent >= cooldown_limit:
                                         last_alert_time[sym] = now
                                         pacing_label = f"5m Shared Cooldown ({qualifying_count} Active Markets)" if qualifying_count > 1 else "2m Single-Market Pacing"
+                                        req1, req2, req3 = alert["target_reqs"]
                                         
                                         alert_msg = (
                                             f"🚨 <b>DERIV ALERT: {alert['category']}</b>\n"
@@ -290,6 +299,7 @@ async def scan() -> None:
                                             f"<b>Top 3</b>: #{alert['top1'][0]} ({alert['top1'][2]:.1f}%), "
                                             f"#{alert['top2'][0]} ({alert['top2'][2]:.1f}%), "
                                             f"#{alert['top3'][0]} ({alert['top3'][2]:.1f}%)\n"
+                                            f"<b>Min Req</b>: {req1}% | {req2}% | {req3}%\n"
                                             f"<b>Opposite Max</b>: {alert['opposite_max']:.1f}%\n"
                                             f"<b>Pacing</b>: {pacing_label}\n"
                                             f"<b>Window</b>: 1,000 ticks"
