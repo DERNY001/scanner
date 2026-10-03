@@ -8,3 +8,5 @@ venv/
 
 #Protect proprietary strategies(anything starting with custom)
 strategies/custom_*.py
+.env
+__pycache__/
