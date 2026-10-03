@@ -74,7 +74,8 @@ class TelegramDispatcher:
 
     async def _worker(self):
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             while True:
                 text = await self.queue.get()
                 payload = {
@@ -82,15 +83,24 @@ class TelegramDispatcher:
                     "text": text,
                     "parse_mode": "HTML"
                 }
-                try:
-                    async with session.post(url, json=payload, timeout=5) as resp:
-                        if resp.status != 200:
-                            err_data = await resp.text()
-                            logger.error(f"Telegram dispatch error ({resp.status}): {err_data}")
-                except Exception as e:
-                    logger.error(f"Telegram network error: {e}")
-                finally:
-                    self.queue.task_done()
+                
+                # Retry loop: attempt up to 3 times if ISP drops connection
+                for attempt in range(1, 4):
+                    try:
+                        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status == 200:
+                                break
+                            else:
+                                err_data = await resp.text()
+                                logger.error(f"Telegram dispatch error ({resp.status}): {err_data}")
+                    except Exception as e:
+                        if attempt < 3:
+                            logger.warning(f"Telegram connection dropped ({e}). Retrying in 2s (Attempt {attempt}/3)...")
+                            await asyncio.sleep(2)
+                        else:
+                            logger.error(f"Telegram network failure after 3 attempts: {e}")
+                
+                self.queue.task_done()
 
 
 class StatisticalDigitEngine:
@@ -118,13 +128,11 @@ class StatisticalDigitEngine:
         counts = Counter(self.buffer)
         pcts = {d: counts[d] / 10.0 for d in range(10)}
 
-        # 1. UNDER 5
         under = self._evaluate_category("UNDER 5", [0, 1, 2, 3, 4], [5, 6, 7, 8, 9], counts, pcts)
         if under:
             self.currently_qualifying = True
             return under
 
-        # 2. OVER 4
         over = self._evaluate_category("OVER 4", [5, 6, 7, 8, 9], [0, 1, 2, 3, 4], counts, pcts)
         if over:
             self.currently_qualifying = True
@@ -215,7 +223,6 @@ async def scan() -> None:
                     async for message in ws:
                         data = json.loads(message)
 
-                        # Priming stage
                         if "history" in data:
                             req_id = data.get("req_id")
                             if req_id is not None and 0 <= (req_id - 100) < len(SYMBOLS):
@@ -234,7 +241,6 @@ async def scan() -> None:
                                         await ws.send(json.dumps({"ticks": s, "subscribe": 1}))
                             continue
 
-                        # Live incoming tick stream
                         if "tick" in data:
                             tick = data["tick"]
                             sym = tick["symbol"]
@@ -246,11 +252,7 @@ async def scan() -> None:
                             if engine:
                                 alert = engine.push(last_digit)
                                 if alert:
-                                    # Count how many markets are currently meeting the condition
                                     qualifying_count = sum(1 for e in engines.values() if e.currently_qualifying)
-                                    
-                                    # 1 market meeting condition -> 2 minutes cooldown
-                                    # More than 1 market meeting condition -> 5 minutes shared cooldown
                                     cooldown_limit = 300 if qualifying_count > 1 else 120
 
                                     now = time.time()
@@ -258,7 +260,6 @@ async def scan() -> None:
 
                                     if now - last_sent >= cooldown_limit:
                                         last_alert_time[sym] = now
-                                        
                                         pacing_label = f"5m Shared Cooldown ({qualifying_count} Active Markets)" if qualifying_count > 1 else "2m Single-Market Pacing"
                                         
                                         alert_msg = (
