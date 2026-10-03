@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections import deque, Counter
 from typing import Optional, Dict, List
 import aiohttp
@@ -17,13 +18,29 @@ logger = logging.getLogger("MultiScanner")
 WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 WINDOW_SIZE = 1000
 
-# Complete target universe (All 1s, Standard Volatilities, and Jumps except Jump 100)
-SYMBOLS = [
-    "1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V",
-    "1HZ150V", "1HZ200V", "1HZ250V", "1HZ300V",
-    "R_10", "R_25", "R_50", "R_75", "R_100",
-    "JD10", "JD25", "JD50", "JD75"
-]
+MARKET_NAMES = {
+    # 1s Continuous Volatility
+    "1HZ10V": "Volatility 10 (1s) Index",
+    "1HZ25V": "Volatility 25 (1s) Index",
+    "1HZ50V": "Volatility 50 (1s) Index",
+    "1HZ75V": "Volatility 75 (1s) Index",
+    "1HZ100V": "Volatility 100 (1s) Index",
+    
+    # Standard Volatility
+    "R_10": "Volatility 10 Index",
+    "R_25": "Volatility 25 Index",
+    "R_50": "Volatility 50 Index",
+    "R_75": "Volatility 75 Index",
+    "R_100": "Volatility 100 Index",
+    
+    # Jump Indices
+    "JD10": "Jump 10 Index",
+    "JD25": "Jump 25 Index",
+    "JD50": "Jump 50 Index",
+    "JD75": "Jump 75 Index",
+}
+
+SYMBOLS = list(MARKET_NAMES.keys())
 
 def load_env() -> Dict[str, str]:
     env_vars = {}
@@ -49,7 +66,7 @@ class TelegramDispatcher:
             logger.warning("Telegram alerts disabled (missing credentials).")
             return
         asyncio.create_task(self._worker())
-        await self.send(f"🟢 <b>Multi-Market Scanner Online</b>\nMonitoring {len(SYMBOLS)} Deriv indices (1,000-tick baseline).")
+        await self.send(f"🟢 <b>Multi-Market Scanner Online</b>\nMonitoring {len(SYMBOLS)} Deriv indices in real time (Adaptive Cooldown Active).")
 
     async def send(self, message: str):
         if self.enabled:
@@ -79,8 +96,11 @@ class TelegramDispatcher:
 class StatisticalDigitEngine:
     def __init__(self, symbol: str, window_size: int = WINDOW_SIZE):
         self.symbol = symbol
+        self.display_name = MARKET_NAMES.get(symbol, symbol)
         self.window_size = window_size
         self.buffer: deque[int] = deque(maxlen=window_size)
+        self.processed_ticks = 0
+        self.currently_qualifying = False
 
     def prime_history(self, prices: List[float], pip_size: int) -> int:
         self.buffer.clear()
@@ -91,6 +111,7 @@ class StatisticalDigitEngine:
 
     def push(self, digit: int) -> Optional[Dict[str, any]]:
         self.buffer.append(digit)
+        self.processed_ticks += 1
         if len(self.buffer) < self.window_size:
             return None
 
@@ -100,13 +121,16 @@ class StatisticalDigitEngine:
         # 1. UNDER 5
         under = self._evaluate_category("UNDER 5", [0, 1, 2, 3, 4], [5, 6, 7, 8, 9], counts, pcts)
         if under:
+            self.currently_qualifying = True
             return under
 
         # 2. OVER 4
         over = self._evaluate_category("OVER 4", [5, 6, 7, 8, 9], [0, 1, 2, 3, 4], counts, pcts)
         if over:
+            self.currently_qualifying = True
             return over
 
+        self.currently_qualifying = False
         return None
 
     def _evaluate_category(self, category_name: str, target_set: List[int], opposite_set: List[int], counts: Counter, pcts: Dict[int, float]) -> Optional[Dict[str, any]]:
@@ -123,6 +147,7 @@ class StatisticalDigitEngine:
                 return {
                     "category": category_name,
                     "symbol": self.symbol,
+                    "display_name": self.display_name,
                     "top1": top1,
                     "top2": top2,
                     "top3": top3,
@@ -140,6 +165,15 @@ async def heartbeat(ws: websockets.WebSocketClientProtocol) -> None:
         pass
 
 
+async def monitor_heartbeat(engines: Dict[str, StatisticalDigitEngine]) -> None:
+    while True:
+        await asyncio.sleep(15)
+        total_ticks = sum(e.processed_ticks for e in engines.values())
+        active_qualifiers = [e.display_name for e in engines.values() if e.currently_qualifying]
+        status_text = f"Active Setups: {len(active_qualifiers)}" if active_qualifiers else "No active skews"
+        logger.info(f"📊 Live ticks ingested: {total_ticks} | {status_text}")
+
+
 async def scan() -> None:
     headers = {
         "Origin": "https://app.deriv.com",
@@ -155,25 +189,27 @@ async def scan() -> None:
 
     engines: Dict[str, StatisticalDigitEngine] = {s: StatisticalDigitEngine(s) for s in SYMBOLS}
     primed_symbols = set()
+    subscribed_live = False
+    last_alert_time: Dict[str, float] = {}
 
     while True:
         try:
             logger.info("Connecting to Deriv Gateway...")
             async with websockets.connect(WS_URL, additional_headers=headers, open_timeout=15, ping_interval=None) as ws:
-                logger.info(f"Connected! Priming 1,000 ticks for {len(SYMBOLS)} symbols...")
+                logger.info(f"Connected! Loading 1,000 baseline ticks for {len(SYMBOLS)} markets...")
                 
-                # Request history for all symbols
-                for sym in SYMBOLS:
+                for idx, sym in enumerate(SYMBOLS):
                     await ws.send(json.dumps({
                         "ticks_history": sym,
                         "count": WINDOW_SIZE,
                         "end": "latest",
                         "style": "ticks",
-                        "req_id": SYMBOLS.index(sym) + 100
+                        "req_id": idx + 100
                     }))
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.04)
 
                 hb_task = asyncio.create_task(heartbeat(ws))
+                stats_task = asyncio.create_task(monitor_heartbeat(engines))
 
                 try:
                     async for message in ws:
@@ -182,22 +218,23 @@ async def scan() -> None:
                         # Priming stage
                         if "history" in data:
                             req_id = data.get("req_id")
-                            if req_id is not None and (req_id - 100) < len(SYMBOLS):
+                            if req_id is not None and 0 <= (req_id - 100) < len(SYMBOLS):
                                 sym = SYMBOLS[req_id - 100]
                                 pip_size = data.get("pip_size", 2)
                                 prices = data["history"].get("prices", [])
                                 engines[sym].prime_history(prices, pip_size)
                                 primed_symbols.add(sym)
-                                logger.info(f"[{len(primed_symbols)}/{len(SYMBOLS)}] Primed baseline for {sym}")
+                                display = MARKET_NAMES.get(sym, sym)
+                                logger.info(f"[{len(primed_symbols)}/{len(SYMBOLS)}] Baseline loaded for {display}")
 
-                                # Subscribe once all are primed
-                                if len(primed_symbols) == len(SYMBOLS):
-                                    logger.info("All baselines loaded! Subscribing to live tick streams...")
+                                if len(primed_symbols) == len(SYMBOLS) and not subscribed_live:
+                                    subscribed_live = True
+                                    logger.info("🟢 ALL 14 BASELINES LOADED. Subscribing to live continuous tick streams...")
                                     for s in SYMBOLS:
-                                        await ws.send(json.dumps({"ticks": s}))
+                                        await ws.send(json.dumps({"ticks": s, "subscribe": 1}))
                             continue
 
-                        # Live tick stream
+                        # Live incoming tick stream
                         if "tick" in data:
                             tick = data["tick"]
                             sym = tick["symbol"]
@@ -209,28 +246,46 @@ async def scan() -> None:
                             if engine:
                                 alert = engine.push(last_digit)
                                 if alert:
-                                    alert_msg = (
-                                        f"🚨 <b>DERIV ALERT: {alert['category']}</b>\n"
-                                        f"<b>Market</b>: {sym}\n"
-                                        f"<b>Quote</b>: {formatted_quote} (Digit: {last_digit})\n"
-                                        f"<b>Top 3</b>: #{alert['top1'][0]} ({alert['top1'][2]:.1f}%), "
-                                        f"#{alert['top2'][0]} ({alert['top2'][2]:.1f}%), "
-                                        f"#{alert['top3'][0]} ({alert['top3'][2]:.1f}%)\n"
-                                        f"<b>Opposite Max</b>: {alert['opposite_max']:.1f}%\n"
-                                        f"<b>Window</b>: 1,000 ticks"
-                                    )
-                                    logger.warning(f"ALERT: {sym} -> {alert['category']}")
-                                    await dispatcher.send(alert_msg)
+                                    # Count how many markets are currently meeting the condition
+                                    qualifying_count = sum(1 for e in engines.values() if e.currently_qualifying)
+                                    
+                                    # 1 market meeting condition -> 2 minutes cooldown
+                                    # More than 1 market meeting condition -> 5 minutes shared cooldown
+                                    cooldown_limit = 300 if qualifying_count > 1 else 120
+
+                                    now = time.time()
+                                    last_sent = last_alert_time.get(sym, 0)
+
+                                    if now - last_sent >= cooldown_limit:
+                                        last_alert_time[sym] = now
+                                        
+                                        pacing_label = f"5m Shared Cooldown ({qualifying_count} Active Markets)" if qualifying_count > 1 else "2m Single-Market Pacing"
+                                        
+                                        alert_msg = (
+                                            f"🚨 <b>DERIV ALERT: {alert['category']}</b>\n"
+                                            f"<b>Market</b>: {alert['display_name']}\n"
+                                            f"<b>Quote</b>: {formatted_quote} (Digit: {last_digit})\n"
+                                            f"<b>Top 3</b>: #{alert['top1'][0]} ({alert['top1'][2]:.1f}%), "
+                                            f"#{alert['top2'][0]} ({alert['top2'][2]:.1f}%), "
+                                            f"#{alert['top3'][0]} ({alert['top3'][2]:.1f}%)\n"
+                                            f"<b>Opposite Max</b>: {alert['opposite_max']:.1f}%\n"
+                                            f"<b>Pacing</b>: {pacing_label}\n"
+                                            f"<b>Window</b>: 1,000 ticks"
+                                        )
+                                        logger.warning(f"ALERT DISPATCHED: {alert['display_name']} -> {alert['category']} ({pacing_label})")
+                                        await dispatcher.send(alert_msg)
 
                         elif "error" in data:
                             logger.error(f"Deriv API error: {data['error']}")
 
                 finally:
                     hb_task.cancel()
+                    stats_task.cancel()
 
         except (websockets.ConnectionClosed, asyncio.TimeoutError, OSError) as e:
             logger.warning(f"Connection lost ({e}). Reconnecting in 5 seconds...")
             primed_symbols.clear()
+            subscribed_live = False
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
