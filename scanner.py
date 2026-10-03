@@ -6,6 +6,7 @@ import time
 from collections import deque, Counter
 from typing import Optional, Dict, List
 import aiohttp
+from aiohttp import web
 import websockets
 
 logging.basicConfig(
@@ -66,7 +67,7 @@ class TelegramDispatcher:
             logger.warning("Telegram alerts disabled (missing credentials).")
             return
         asyncio.create_task(self._worker())
-        await self.send(f"🟢 <b>Multi-Market Scanner Online</b>\nMonitoring {len(SYMBOLS)} Deriv indices in real time (Adaptive Cooldown Active).")
+        await self.send(f"🟢 <b>Multi-Market Scanner Online (Render)</b>\nMonitoring {len(SYMBOLS)} Deriv indices (Adaptive Cooldown Active).")
 
     async def send(self, message: str):
         if self.enabled:
@@ -83,8 +84,6 @@ class TelegramDispatcher:
                     "text": text,
                     "parse_mode": "HTML"
                 }
-                
-                # Retry loop: attempt up to 3 times if ISP drops connection
                 for attempt in range(1, 4):
                     try:
                         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -99,7 +98,6 @@ class TelegramDispatcher:
                             await asyncio.sleep(2)
                         else:
                             logger.error(f"Telegram network failure after 3 attempts: {e}")
-                
                 self.queue.task_done()
 
 
@@ -182,6 +180,25 @@ async def monitor_heartbeat(engines: Dict[str, StatisticalDigitEngine]) -> None:
         logger.info(f"📊 Live ticks ingested: {total_ticks} | {status_text}")
 
 
+# --- Web Server to Satisfy Render's Health Check & Keep Alive ---
+async def start_web_server(engines: Dict[str, StatisticalDigitEngine]):
+    async def handle_ping(request):
+        total_ticks = sum(e.processed_ticks for e in engines.values())
+        return web.Response(text=f"OK - Deriv Scanner Running. Ingested ticks: {total_ticks}")
+
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+
+    # Render automatically provides a PORT environment variable (usually 10000)
+    port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"🌐 Keep-alive web server listening on port {port}")
+
+
 async def scan() -> None:
     headers = {
         "Origin": "https://app.deriv.com",
@@ -189,16 +206,20 @@ async def scan() -> None:
     }
 
     env = load_env()
-    dispatcher = TelegramDispatcher(
-        token=env.get("TELEGRAM_BOT_TOKEN"),
-        chat_id=env.get("TELEGRAM_CHAT_ID")
-    )
+    # Check both OS environment (Render Dashboard) and local .env
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or env.get("TELEGRAM_CHAT_ID")
+
+    dispatcher = TelegramDispatcher(token=token, chat_id=chat_id)
     await dispatcher.start()
 
     engines: Dict[str, StatisticalDigitEngine] = {s: StatisticalDigitEngine(s) for s in SYMBOLS}
     primed_symbols = set()
     subscribed_live = False
     last_alert_time: Dict[str, float] = {}
+
+    # Launch the embedded web server alongside the WebSocket scanner
+    await start_web_server(engines)
 
     while True:
         try:
