@@ -291,7 +291,7 @@ class ExecutionEngine:
                 f"Result: *{status}* (Exit Digit: `{exit_digit}`)\n"
                 f"P/L: `${profit_loss:+.2f}` | Next Stake: `${self.current_stake:.2f}`\n"
                 f"Live Balance: `${updated_balance:.2f}`\n"
-                f"Ledgers: A=${portfolios["A"].balance:.2f} ert{} B=${portfolios["B"].balance:.2f} | C=${portfolios["C"].balance:.2f} ert{} D=${portfolios["D"].balance:.2f}"
+                f"Ledgers: A=${portfolios["A"].balance:.2f} | B=${portfolios["B"].balance:.2f} | C=${portfolios["C"].balance:.2f} | D=${portfolios["D"].balance:.2f}"
             )
             asyncio.create_task(send_telegram_alert(msg))
 
