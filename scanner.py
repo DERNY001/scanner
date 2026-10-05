@@ -1,7 +1,6 @@
 from trader import ExecutionEngine
 
 trader_engine = ExecutionEngine()
-trader_engine.ensure_background_monitors()
 import asyncio
 import json
 import logging
@@ -225,6 +224,7 @@ async def scan() -> None:
 
     dispatcher = TelegramDispatcher(token=token, chat_id=chat_id)
     await dispatcher.start()
+    trader_engine.ensure_background_monitors()
 
     engines: Dict[str, StatisticalDigitEngine] = {s: StatisticalDigitEngine(s) for s in SYMBOLS}
     primed_symbols = set()
