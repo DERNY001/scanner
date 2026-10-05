@@ -1,6 +1,7 @@
 from trader import ExecutionEngine
 
 trader_engine = ExecutionEngine()
+trader_engine.ensure_background_monitors()
 import asyncio
 import json
 import logging
