@@ -1,3 +1,6 @@
+from trader import ExecutionEngine
+
+trader_engine = ExecutionEngine()
 import asyncio
 import json
 import logging
@@ -306,6 +309,19 @@ async def scan() -> None:
                                         )
                                         logger.warning(f"ALERT DISPATCHED: {alert['display_name']} -> {alert['category']} ({pacing_label})")
                                         await dispatcher.send(alert_msg)
+
+                                        # --- AUTOMATED TRADER HOOK ---
+                                        target_dir = "DIGITUNDER" if alert["category"] == "UNDER 5" else "DIGITOVER"
+                                        barrier_val = 5 if alert["category"] == "UNDER 5" else 4
+                                        asyncio.create_task(
+                                            trader_engine.execute_trade(
+                                                symbol=sym,
+                                                target_type=target_dir,
+                                                barrier=barrier_val,
+                                                quote=float(tick["quote"]),
+                                                digits_1000=list(engine.buffer)
+                                            )
+                                        )
 
                         elif "error" in data:
                             logger.error(f"Deriv API error: {data['error']}")
