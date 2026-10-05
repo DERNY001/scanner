@@ -14,8 +14,8 @@ import websockets
 # ==========================================
 DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 DERIV_TOKEN = os.environ.get("DERIV_DEMO_TOKEN", "pat_5d445d2fb269576d6660b5006db40520be36fc0cc1319cede5db09ea19af39b8").strip()
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.environ.get("TRADER_TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TRADER_TELEGRAM_CHAT_ID", "").strip()
 
 BASE_STAKE = 0.35
 CYCLE_TARGET_PROFIT = 0.70       # Target profit per completed cycle ($0.70)
