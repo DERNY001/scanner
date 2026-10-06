@@ -47,8 +47,6 @@ MARKET_NAMES = {
 SYMBOLS = list(MARKET_NAMES.keys())
 
 def get_thresholds_for_symbol(symbol: str) -> Tuple[int, int, int]:
-    if symbol.startswith("1HZ") or symbol.startswith("JD"):
-        return 119, 117, 113
     return 119, 117, 113
 
 def load_env() -> Dict[str, str]:
@@ -78,8 +76,7 @@ class TelegramDispatcher:
         await self.send(
             f"🟢 <b>Multi-Market Scanner Updated (Render)</b>\n"
             f"Monitoring {len(SYMBOLS)} indices.\n"
-            f"• 1s & Jump Threshold: 12.0% | 11.8% | 11.4%\n"
-            f"• Standard Vol Threshold: 11.9% | 11.7% | 11.3%"
+            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.3%"
         )
 
     async def send(self, message: str):
