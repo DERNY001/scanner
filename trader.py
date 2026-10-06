@@ -94,15 +94,34 @@ def check_market_stability(symbol: str, target_direction: str, digits_1000: List
 def check_pullback_entry(target_direction: str, recent_digits: List[int]) -> bool:
     if len(recent_digits) < 4:
         return False
-    # Last 4 ticks: t-3, t-2, t-1 (winning side) and current t0 (opposite side)
-    t_m3, t_m2, t_m1, t_curr = recent_digits[-4:]
 
+    latest_tick = recent_digits[-1]
+    
+    # 1. Latest tick must be on the winning/favored side
     if target_direction == "DIGITUNDER":
-        # 3 ticks on winning side (< 5) and 1 tick on opposite side (>= 5)
-        return all(d < 5 for d in [t_m3, t_m2, t_m1]) and (t_curr >= 5)
+        if latest_tick >= 5:
+            return False
+        # Count consecutive opposite ticks (>= 5) right before the latest tick
+        opposite_count = 0
+        for digit in reversed(recent_digits[:-1]):
+            if digit >= 5:
+                opposite_count += 1
+            else:
+                break
+        return opposite_count >= 3
+
     elif target_direction == "DIGITOVER":
-        # 3 ticks on winning side (> 4) and 1 tick on opposite side (<= 4)
-        return all(d > 4 for d in [t_m3, t_m2, t_m1]) and (t_curr <= 4)
+        if latest_tick <= 4:
+            return False
+        # Count consecutive opposite ticks (<= 4) right before the latest tick
+        opposite_count = 0
+        for digit in reversed(recent_digits[:-1]):
+            if digit <= 4:
+                opposite_count += 1
+            else:
+                break
+        return opposite_count >= 3
+
     return False
 
 def is_market_on_cooldown(symbol: str) -> bool:
