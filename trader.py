@@ -9,9 +9,6 @@ from typing import Dict, List, Optional
 import aiohttp
 import websockets
 
-# ==========================================
-# 1. CORE PARAMETERS & CONFIGURATION
-# ==========================================
 DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 DERIV_TOKEN = os.environ.get("DERIV_DEMO_TOKEN", "").strip()
 SCANNER_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -28,9 +25,6 @@ LEDGER_FILE = "multi_tracker_ledger.csv"
 
 market_last_traded: Dict[str, float] = {}
 
-# ==========================================
-# 2. MULTI-LEDGER SHADOW TRACKING MODELS
-# ==========================================
 @dataclass
 class PaperPortfolio:
     name: str
@@ -70,14 +64,6 @@ portfolios: Dict[str, PaperPortfolio] = {
     "D": PaperPortfolio("D_UltraCautious", balance=10.0, max_cycles=5, stop_loss_balance=0.0)
 }
 
-# ==========================================
-# 3. STATISTICAL FILTERS & PATTERN LOGIC
-# ==========================================
-FAST_SYMBOLS = {
-    "1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V",
-    "JD10", "JD25", "JD50", "JD75", "JD100"
-}
-
 def check_market_stability(symbol: str, target_direction: str, digits_1000: List[int]) -> bool:
     if len(digits_1000) < 1000:
         return False
@@ -86,10 +72,7 @@ def check_market_stability(symbol: str, target_direction: str, digits_1000: List
     counts = {d: digits_1000.count(d) for d in range(10)}
     percentages = {d: (cnt / total_ticks) * 100.0 for d, cnt in counts.items()}
 
-    if symbol in FAST_SYMBOLS:
-        req_r1, req_r2, req_r3 = 12.1, 11.9, 11.5
-    else:
-        req_r1, req_r2, req_r3 = 12.0, 11.8, 11.4
+    req_r1, req_r2, req_r3 = 11.9, 11.7, 11.3
 
     if target_direction == "DIGITUNDER":
         favored_pcts = sorted([percentages[d] for d in range(5)], reverse=True)
@@ -108,25 +91,24 @@ def check_market_stability(symbol: str, target_direction: str, digits_1000: List
 
     return True
 
-def check_exhaustion_sequence(target_direction: str, recent_digits: List[int]) -> bool:
-    if len(recent_digits) < 5:
+def check_pullback_entry(target_direction: str, recent_digits: List[int]) -> bool:
+    if len(recent_digits) < 4:
         return False
-    last_5 = recent_digits[-5:]
-    d_m4, d_m3, d_m2, d_m1, d_current = last_5
+    # Last 4 ticks: t-3, t-2, t-1 (winning side) and current t0 (opposite side)
+    t_m3, t_m2, t_m1, t_curr = recent_digits[-4:]
 
     if target_direction == "DIGITUNDER":
-        return all(d >= 5 for d in [d_m4, d_m3, d_m2, d_m1]) and (d_current < 5)
+        # 3 ticks on winning side (< 5) and 1 tick on opposite side (>= 5)
+        return all(d < 5 for d in [t_m3, t_m2, t_m1]) and (t_curr >= 5)
     elif target_direction == "DIGITOVER":
-        return all(d <= 4 for d in [d_m4, d_m3, d_m2, d_m1]) and (d_current > 4)
+        # 3 ticks on winning side (> 4) and 1 tick on opposite side (<= 4)
+        return all(d > 4 for d in [t_m3, t_m2, t_m1]) and (t_curr <= 4)
     return False
 
 def is_market_on_cooldown(symbol: str) -> bool:
     now = time.time()
     return (now - market_last_traded.get(symbol, 0.0)) < MARKET_COOLDOWN_SECONDS
 
-# ==========================================
-# 4. ASYNC TELEGRAM NOTIFICATIONS
-# ==========================================
 async def send_telegram(token: str, chat_id: str, message: str):
     if not token or not chat_id:
         return
@@ -139,9 +121,6 @@ async def send_telegram(token: str, chat_id: str, message: str):
     except Exception:
         pass
 
-# ==========================================
-# 5. EXECUTION & LOGGING ENGINE
-# ==========================================
 class ExecutionEngine:
     def __init__(self):
         self.current_stake = BASE_STAKE
@@ -162,44 +141,52 @@ class ExecutionEngine:
 
     async def _send_startup_message(self):
         msg = (
-            "🚀 <b>DERIV ULTRA-CAUTIOUS TRADER: ONLINE</b>\n"
+            "🚀 <b>DERIV TRADER: ACTIVE & RUNNING</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "• <b>Status</b>: Active & Monitoring\n"
             "• <b>Base Stake</b>: $0.35 (Martingale 2.0x)\n"
-            "• <b>Market Filter</b>: Strict +0.1% Thresholds\n"
-            "• <b>Execution Gate</b>: 4-Opposite + 1-Reversal\n"
-            "• <b>Symbol Cooldown</b>: 15 Minutes Locked\n"
-            "• <b>Ledger Models</b>: 4 Active Shadow Portfolios\n"
-            "<i>Zero-latency thread verified. Ready for execution.</i>"
+            "• <b>Thresholds</b>: 11.9% / 11.7% / 11.3% (All Markets)\n"
+            "• <b>Opposite Cap</b>: Strict &lt; 10.0%\n"
+            "• <b>Entry Pattern</b>: 3 Winning Ticks + 1 Opposite Pullback\n"
+            "• <b>Cooldown</b>: 15m per Market\n"
+            "• <b>Daily Heartbeat & Report</b>: Clock-Aligned at 12:00 UTC\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Execution engine standing by.</i>"
         )
         await send_telegram(TRADER_BOT_TOKEN, TRADER_CHAT_ID, msg)
 
     async def _daily_monitor_loop(self):
         while True:
-            await asyncio.sleep(86400)
-            # 1. Scanner Heartbeat
+            now = datetime.datetime.now(datetime.timezone.utc)
+            target = now.replace(hour=12, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += datetime.timedelta(days=1)
+            sleep_seconds = (target - now).total_seconds()
+            await asyncio.sleep(sleep_seconds)
+
+            # Scanner Channel Heartbeat
             scanner_msg = "🌅 <b>New day. Successful trades.</b>\nScanner active across all 14 indices."
             asyncio.create_task(send_telegram(SCANNER_BOT_TOKEN, SCANNER_CHAT_ID, scanner_msg))
 
-            # 2. Trader Heartbeat & Comprehensive Audit
+            # Trader Channel Heartbeat & Comprehensive Audit
             win_rate = (self.total_wins / self.total_trades * 100.0) if self.total_trades > 0 else 0.0
             audit_msg = (
                 "🌅 <b>New day. Successful trades.</b>\n\n"
-                "📊 <b>24-HOUR TRADING AUDIT REPORT</b>\n"
+                "📊 <b>DAILY TRADING AUDIT (12:00 UTC)</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• <b>Total Trades</b>: {self.total_trades} (W: {self.total_wins} | L: {self.total_losses})\n"
                 f"• <b>Win Rate</b>: {win_rate:.1f}%\n"
-                f"• <b>Live P/L</b>: <code>${self.session_pnl:+.2f}</code>\n"
-                f"• <b>Deriv Live Balance</b>: <code>${self.live_balance:.2f}</code>\n\n"
+                f"• <b>Session P/L</b>: <code>${self.session_pnl:+.2f}</code>\n"
+                f"• <b>Deriv Balance</b>: <code>${self.live_balance:.2f}</code>\n\n"
                 "💼 <b>LEDGER COMPARISON MATRIX:</b>\n"
                 f"├ <b>A (Live/5-Cycles)</b>: ${portfolios['A'].balance:.2f} (Cycle {portfolios['A'].current_cycle}/5)\n"
                 f"├ <b>B (Moderate/3-Cycles)</b>: ${portfolios['B'].balance:.2f} (Cycle {portfolios['B'].current_cycle}/3)\n"
                 f"├ <b>C (Strict Stop $5)</b>: ${portfolios['C'].balance:.2f} (Halted: {portfolios['C'].is_halted})\n"
                 f"└ <b>D (Ultra-Cautious)</b>: ${portfolios['D'].balance:.2f} (Paused: {portfolios['D'].is_cycle_paused})\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "<i>Bot is operational and standing by.</i>"
+                "<i>Trading bot operational.</i>"
             )
             asyncio.create_task(send_telegram(TRADER_BOT_TOKEN, TRADER_CHAT_ID, audit_msg))
+            await asyncio.sleep(60)
 
     def _init_csv(self):
         if not os.path.exists(LEDGER_FILE):
@@ -229,15 +216,13 @@ class ExecutionEngine:
             ])
 
     async def execute_trade(self, symbol: str, target_type: str, barrier: int, quote: float, digits_1000: List[int]):
-        self.ensure_background_monitors()
-
         if not DERIV_TOKEN:
             return None
         if is_market_on_cooldown(symbol):
             return None
         if not check_market_stability(symbol, target_type, digits_1000):
             return None
-        if not check_exhaustion_sequence(target_type, digits_1000):
+        if not check_pullback_entry(target_type, digits_1000):
             return None
 
         market_last_traded[symbol] = time.time()

@@ -48,7 +48,7 @@ SYMBOLS = list(MARKET_NAMES.keys())
 
 def get_thresholds_for_symbol(symbol: str) -> Tuple[int, int, int]:
     if symbol.startswith("1HZ") or symbol.startswith("JD"):
-        return 120, 118, 114
+        return 119, 117, 113
     return 119, 117, 113
 
 def load_env() -> Dict[str, str]:
