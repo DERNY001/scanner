@@ -165,7 +165,7 @@ class ExecutionEngine:
             "• <b>Base Stake</b>: $0.35 (Martingale 2.0x)\n"
             "• <b>Thresholds</b>: 11.9% / 11.7% / 11.3% (All Markets)\n"
             "• <b>Opposite Cap</b>: Strict &lt; 10.0%\n"
-            "• <b>Entry Pattern</b>: 3 Winning Ticks + 1 Opposite Pullback\n"
+            "• <b>Entry Pattern</b>: ≥3 Opposite Pullback Ticks + 1 Winning Reversal Tick\n"
             "• <b>Cooldown</b>: 15m per Market\n"
             "• <b>Daily Heartbeat & Report</b>: Clock-Aligned at 12:00 UTC\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
