@@ -235,27 +235,81 @@ class ExecutionEngine:
             ])
 
     async def execute_trade(self, symbol: str, target_type: str, barrier: int, quote: float, digits_1000: List[int]):
+        logger.info(f"[TRADER] Alert received for {symbol} ({target_type} barrier {barrier}). Evaluating setup...")
+
         if not DERIV_TOKEN:
+            logger.error("[TRADER GATE] Aborted: DERIV_TOKEN is not configured.")
             return None
+
         if is_market_on_cooldown(symbol):
+            logger.warning(f"[TRADER GATE] Aborted: {symbol} is currently on a 15-minute cooldown.")
             return None
+
         if not check_market_stability(symbol, target_type, digits_1000):
-            return None
-        if not check_pullback_entry(target_type, digits_1000):
+            logger.warning(f"[TRADER GATE] Aborted: {symbol} failed market stability check (opposite digit >= 10.0% or threshold unmet).")
             return None
 
-        market_last_traded[symbol] = time.time()
+        logger.info(f"[TRADER] {symbol} passed initial stability. Arming pullback watcher (waiting for >=3 opposite ticks + 1 reversal)...")
 
+        # Connect WebSocket to watch live ticks and execute order when pattern triggers
         async with websockets.connect(DERIV_WS_URL) as ws:
             await ws.send(json.dumps({"authorize": DERIV_TOKEN}))
             auth_res = json.loads(await ws.recv())
 
             if "error" in auth_res:
+                logger.error(f"[TRADER AUTH ERROR] Deriv authorization failed: {auth_res["error"]}")
                 return None
+
             if not auth_res["authorize"].get("is_virtual"):
                 raise SystemExit("SAFETY STOP: Real Account Token Detected!")
 
             self.live_balance = float(auth_res["authorize"]["balance"])
+            logger.info(f"[TRADER AUTH] Authorized successfully on Demo. Balance: ${self.live_balance:.2f}")
+
+            # Subscribe to live ticks for this symbol to await the pullback sequence
+            await ws.send(json.dumps({"ticks": symbol, "subscribe": 1}))
+            sub_res = json.loads(await ws.recv())
+            tick_sub_id = sub_res.get("subscription", {}).get("id")
+
+            recent_buffer = list(digits_1000)
+            pattern_confirmed = False
+            watch_limit = 60  # Wait up to 60 ticks for the pullback + reversal
+
+            for _ in range(watch_limit):
+                msg = json.loads(await ws.recv())
+                if "tick" not in msg:
+                    continue
+
+                new_quote = str(msg["tick"]["quote"])
+                last_digit = int(new_quote[-1])
+                recent_buffer.append(last_digit)
+                if len(recent_buffer) > 1000:
+                    recent_buffer.pop(0)
+
+                # Re-verify market stability preserves strict < 10.0% opposite rule
+                if not check_market_stability(symbol, target_type, recent_buffer):
+                    logger.warning(f"[TRADER GATE] Stability broken during watcher for {symbol}. Disarming.")
+                    break
+
+                # Check if >= 3 opposite ticks followed by 1 reversal tick formed
+                if check_pullback_entry(target_type, recent_buffer):
+                    logger.info(f"[TRADER CONFIRMED] Pullback entry triggered on {symbol}! Executing order now.")
+                    pattern_confirmed = True
+                    break
+
+            # Unsubscribe from ticks
+            if tick_sub_id:
+                try:
+                    await ws.send(json.dumps({"forget": tick_sub_id}))
+                    await ws.recv()
+                except Exception:
+                    pass
+
+            if not pattern_confirmed:
+                logger.info(f"[TRADER TIMEOUT] Pullback pattern did not complete within {watch_limit} ticks on {symbol}. Setup expired.")
+                return None
+
+            market_last_traded[symbol] = time.time()
 
             proposal_req = {
                 "proposal": 1,
@@ -271,15 +325,18 @@ class ExecutionEngine:
             await ws.send(json.dumps(proposal_req))
             prop_res = json.loads(await ws.recv())
             if "error" in prop_res:
+                logger.error(f"[TRADER PROPOSAL ERROR] {prop_res["error"]}")
                 return None
 
             buy_req = {"buy": prop_res["proposal"]["id"], "price": round(self.current_stake, 2)}
             await ws.send(json.dumps(buy_req))
             buy_res = json.loads(await ws.recv())
             if "error" in buy_res:
+                logger.error(f"[TRADER BUY ERROR] {buy_res["error"]}")
                 return None
 
             contract_id = buy_res["buy"]["contract_id"]
+            logger.info(f"[TRADER ORDER PLACED] Contract #{contract_id} bought at ${self.current_stake:.2f} on {symbol}")
             await ws.send(json.dumps({"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}))
 
             profit_loss = 0.0
@@ -312,14 +369,5 @@ class ExecutionEngine:
 
             market_stable_now = check_market_stability(symbol, target_type, digits_1000)
             self.live_balance += profit_loss
+            logger.info(f"[TRADER COMPLETED] Result: {status} | PnL: ${profit_loss:+.2f} | Balance: ${self.live_balance:.2f}")
             self.log_trade(symbol, target_type, barrier, self.current_stake, status, exit_digit, profit_loss, self.live_balance, market_stable_now)
-
-            msg = (
-                f"⚡ <b>TRADE EXECUTED: {symbol}</b>\n"
-                f"• Result: <b>{status}</b> (Exit: <code>{exit_digit}</code>)\n"
-                f"• P/L: <code>${profit_loss:+.2f}</code> | Next: <code>${self.current_stake:.2f}</code>\n"
-                f"• Balance: <code>${self.live_balance:.2f}</code>\n"
-                f"• Portfolios: A=${portfolios['A'].balance:.2f} | B=${portfolios['B'].balance:.2f} | C=${portfolios['C'].balance:.2f} | D=${portfolios['D'].balance:.2f}"
-            )
-            asyncio.create_task(send_telegram(TRADER_BOT_TOKEN, TRADER_CHAT_ID, msg))
-            return {"status": status, "pnl": profit_loss, "exit_digit": exit_digit}
