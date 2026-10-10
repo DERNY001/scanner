@@ -1,3 +1,4 @@
+import asyncio
 
 
 WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
