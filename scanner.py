@@ -1,3 +1,5 @@
+from trader import ExecutionEngine
+trader_engine = ExecutionEngine()
 import os
 import sys
 import time
