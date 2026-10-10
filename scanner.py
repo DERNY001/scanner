@@ -4,9 +4,12 @@ import time
 import json
 import asyncio
 import logging
-from collections import deque
+logger = logging.getLogger("scanner")
+logging.basicConfig(level=logging.INFO)
+from collections import deque, Counter
 from typing import Dict, List, Tuple, Optional, Set, Any
 import aiohttp
+from aiohttp import web
 import websockets
 from trader import ExecutionEngine
 
