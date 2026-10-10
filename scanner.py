@@ -1,36 +1,4 @@
 
-async def _start_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    app = web.Application()
-    async def _handle_health(request):
-        return web.Response(text="OK - Scanner & Bot Active")
-    app.router.add_get("/", _handle_health)
-    app.router.add_get("/healthz", _handle_handle := _handle_health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-from trader import ExecutionEngine
-
-trader_engine = ExecutionEngine()
-import asyncio
-import json
-import logging
-import os
-import time
-from collections import deque, Counter
-from typing import Optional, Dict, List, Tuple
-import aiohttp
-from aiohttp import web
-import websockets
-
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    level=logging.INFO,
-    datefmt="%H:%M:%S"
-)
-logger = logging.getLogger("MultiScanner")
 
 WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 WINDOW_SIZE = 1000
@@ -234,7 +202,6 @@ async def scan() -> None:
 
     dispatcher = TelegramDispatcher(token=token, chat_id=chat_id)
     await dispatcher.start()
-    await _start_health_server()
     trader_engine.ensure_background_monitors()
 
     engines: Dict[str, StatisticalDigitEngine] = {s: StatisticalDigitEngine(s) for s in SYMBOLS}
