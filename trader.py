@@ -72,7 +72,7 @@ def check_market_stability(symbol: str, target_direction: str, digits_1000: List
     counts = {d: digits_1000.count(d) for d in range(10)}
     percentages = {d: (cnt / total_ticks) * 100.0 for d, cnt in counts.items()}
 
-    req_r1, req_r2, req_r3 = 11.9, 11.7, 11.3
+    req_r1, req_r2, req_r3 = 11.9, 11.7, 11.5
 
     if target_direction == "DIGITUNDER":
         favored_pcts = sorted([percentages[d] for d in range(5)], reverse=True)
@@ -163,7 +163,7 @@ class ExecutionEngine:
             "🚀 <b>DERIV TRADER: ACTIVE & RUNNING</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "• <b>Base Stake</b>: $0.35 (Martingale 2.0x)\n"
-            "• <b>Thresholds</b>: 11.9% / 11.7% / 11.3% (All Markets)\n"
+            "• <b>Thresholds</b>: 11.9% / 11.7% / 11.5% (All Markets)\n"
             "• <b>Opposite Cap</b>: Strict &lt; 10.0%\n"
             "• <b>Entry Pattern</b>: ≥3 Opposite Pullback Ticks + 1 Winning Reversal Tick\n"
             "• <b>Cooldown</b>: 15m per Market\n"

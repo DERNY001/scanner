@@ -74,7 +74,7 @@ class TelegramDispatcher:
         await self.send(
             f"🟢 <b>Multi-Market Scanner Updated (Render)</b>\n"
             f"Monitoring {len(SYMBOLS)} indices.\n"
-            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.3%"
+            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.5%"
         )
 
     async def send(self, message: str):
@@ -122,7 +122,7 @@ class StatisticalDigitEngine:
     def prime_history(self, prices: List[float], pip_size: int) -> int:
         self.buffer.clear()
         for price in prices:
-            formatted = f"{float(price):.{pip_size}f}"
+            formatted = f"{float(price):.{int(float(pip_size))}f}"
             self.buffer.append(int(formatted[-1]))
         return len(self.buffer)
 
