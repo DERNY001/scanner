@@ -45,7 +45,7 @@ MARKET_NAMES = {
 SYMBOLS = list(MARKET_NAMES.keys())
 
 def get_thresholds_for_symbol(symbol: str) -> Tuple[int, int, int]:
-    return 119, 117, 113
+    return 119, 117, 115
 
 def load_env() -> Dict[str, str]:
     env_vars = {}

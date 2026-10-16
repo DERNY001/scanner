@@ -167,7 +167,7 @@ class ExecutionEngine:
             "• <b>Opposite Cap</b>: Strict &lt; 10.0%\n"
             "• <b>Entry Pattern</b>: ≥3 Opposite Pullback Ticks + 1 Winning Reversal Tick\n"
             "• <b>Cooldown</b>: 15m per Market\n"
-            "• <b>Daily Heartbeat & Report</b>: Clock-Aligned at 12:00 UTC\n"
+            "• <b>Daily Heartbeat & Report</b>: Clock-Aligned at 12:00 AM EAT (21:00 UTC)\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "<i>Execution engine standing by.</i>"
         )
@@ -176,7 +176,7 @@ class ExecutionEngine:
     async def _daily_monitor_loop(self):
         while True:
             now = datetime.datetime.now(datetime.timezone.utc)
-            target = now.replace(hour=12, minute=0, second=0, microsecond=0)
+            target = now.replace(hour=21, minute=0, second=0, microsecond=0)
             if target <= now:
                 target += datetime.timedelta(days=1)
             sleep_seconds = (target - now).total_seconds()
@@ -190,7 +190,7 @@ class ExecutionEngine:
             win_rate = (self.total_wins / self.total_trades * 100.0) if self.total_trades > 0 else 0.0
             audit_msg = (
                 "🌅 <b>New day. Successful trades.</b>\n\n"
-                "📊 <b>DAILY TRADING AUDIT (12:00 UTC)</b>\n"
+                "📊 <b>DAILY TRADING AUDIT (12:00 AM EAT / 21:00 UTC)</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"• <b>Total Trades</b>: {self.total_trades} (W: {self.total_wins} | L: {self.total_losses})\n"
                 f"• <b>Win Rate</b>: {win_rate:.1f}%\n"
