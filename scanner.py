@@ -74,7 +74,7 @@ class TelegramDispatcher:
         await self.send(
             f"🟢 <b>Multi-Market Scanner Updated (Render)</b>\n"
             f"Monitoring {len(SYMBOLS)} indices.\n"
-            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.5%"
+            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.4%"
         )
 
     async def send(self, message: str):
@@ -326,7 +326,7 @@ async def scan() -> None:
                     hb_task.cancel()
                     stats_task.cancel()
 
-        except (websockets.ConnectionClosed, asyncio.TimeoutError, OSError) as e:
+        except (websockets.ConnectionClosed, websockets.InvalidStatus, asyncio.TimeoutError, OSError) as e:
             logger.warning(f"Connection lost ({e}). Reconnecting in 5 seconds...")
             primed_symbols.clear()
             subscribed_live = False
