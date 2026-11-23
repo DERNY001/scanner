@@ -76,7 +76,7 @@ class TelegramDispatcher:
             f"🟢 <b>Multi-Market Scanner Updated (Render)</b>\n"
             f"Monitoring {len(SYMBOLS)} indices.\n"
             f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.5%\n"
-            f"• Opposite-Side Cap: Strict < 9.8%"
+            f"• Opposite-Side Cap: Strict &lt; 9.8%"
         )
 
     async def send(self, message: str):
