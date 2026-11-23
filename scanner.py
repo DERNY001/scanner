@@ -44,6 +44,7 @@ MARKET_NAMES = {
 
 SYMBOLS = list(MARKET_NAMES.keys())
 
+
 def get_thresholds_for_symbol(symbol: str) -> Tuple[int, int, int]:
     return 119, 117, 115
 
@@ -74,7 +75,8 @@ class TelegramDispatcher:
         await self.send(
             f"🟢 <b>Multi-Market Scanner Updated (Render)</b>\n"
             f"Monitoring {len(SYMBOLS)} indices.\n"
-            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.4%"
+            f"• Unified Threshold (All 14 Indices): 11.9% | 11.7% | 11.5%\n"
+            f"• Opposite-Side Cap: Strict < 9.8%"
         )
 
     async def send(self, message: str):
@@ -126,29 +128,37 @@ class StatisticalDigitEngine:
             self.buffer.append(int(formatted[-1]))
         return len(self.buffer)
 
-    def push(self, digit: int) -> Optional[Dict[str, any]]:
+    def push(self, digit: int) -> List[Dict[str, Any]]:
         self.buffer.append(digit)
         self.processed_ticks += 1
         if len(self.buffer) < self.window_size:
-            return None
+            return []
 
         counts = Counter(self.buffer)
-        pcts = {d: counts[d] / 10.0 for d in range(10)}
+        pcts = {d: counts[d] / (self.window_size / 100.0) for d in range(10)}
 
+        alerts = []
+        
+        # UNDER 5
         under = self._evaluate_category("UNDER 5", [0, 1, 2, 3, 4], [5, 6, 7, 8, 9], counts, pcts)
-        if under:
-            self.currently_qualifying = True
-            return under
+        if under: alerts.append(under)
 
+        # OVER 4
         over = self._evaluate_category("OVER 4", [5, 6, 7, 8, 9], [0, 1, 2, 3, 4], counts, pcts)
-        if over:
-            self.currently_qualifying = True
-            return over
+        if over: alerts.append(over)
 
-        self.currently_qualifying = False
-        return None
+        # EVEN
+        even = self._evaluate_category("EVEN", [0, 2, 4, 6, 8], [1, 3, 5, 7, 9], counts, pcts)
+        if even: alerts.append(even)
 
-    def _evaluate_category(self, category_name: str, target_set: List[int], opposite_set: List[int], counts: Counter, pcts: Dict[int, float]) -> Optional[Dict[str, any]]:
+        # ODD
+        odd = self._evaluate_category("ODD", [1, 3, 5, 7, 9], [0, 2, 4, 6, 8], counts, pcts)
+        if odd: alerts.append(odd)
+
+        self.currently_qualifying = len(alerts) > 0
+        return alerts
+
+    def _evaluate_category(self, category_name: str, target_set: List[int], opposite_set: List[int], counts: Counter, pcts: Dict[int, float]) -> Optional[Dict[str, Any]]:
         ranked = sorted(
             [(d, counts[d], pcts[d]) for d in target_set],
             key=lambda item: item[1],
@@ -158,7 +168,7 @@ class StatisticalDigitEngine:
         top1, top2, top3 = ranked[0], ranked[1], ranked[2]
 
         if top1[1] >= self.t1_limit and top2[1] >= self.t2_limit and top3[1] >= self.t3_limit:
-            if all(counts[d] < 100 for d in opposite_set):
+            if all(counts[d] < 98 for d in opposite_set):
                 return {
                     "category": category_name,
                     "symbol": self.symbol,
@@ -278,16 +288,16 @@ async def scan() -> None:
 
                             engine = engines.get(sym)
                             if engine:
-                                alert = engine.push(last_digit)
-                                if alert:
+                                alerts = engine.push(last_digit)
+                                for alert in alerts:
                                     qualifying_count = sum(1 for e in engines.values() if e.currently_qualifying)
                                     cooldown_limit = 300 if qualifying_count > 1 else 120
 
                                     now = time.time()
-                                    last_sent = last_alert_time.get(sym, 0)
+                                    last_sent = last_alert_time.get((sym, alert["category"]), 0)
 
                                     if now - last_sent >= cooldown_limit:
-                                        last_alert_time[sym] = now
+                                        last_alert_time[(sym, alert["category"])] = now
                                         pacing_label = f"5m Shared Cooldown ({qualifying_count} Active Markets)" if qualifying_count > 1 else "2m Single-Market Pacing"
                                         req1, req2, req3 = alert["target_reqs"]
                                         
@@ -307,18 +317,23 @@ async def scan() -> None:
                                         await dispatcher.send(alert_msg)
 
                                         # --- AUTOMATED TRADER HOOK ---
-                                        target_dir = "DIGITUNDER" if alert["category"] == "UNDER 5" else "DIGITOVER"
-                                        barrier_val = 5 if alert["category"] == "UNDER 5" else 4
-                                        asyncio.create_task(
-                                            trader_engine.execute_trade(
-                                                symbol=sym,
-                                                target_type=target_dir,
-                                                barrier=barrier_val,
-                                                quote=float(tick["quote"]),
-                                                digits_1000=list(engine.buffer)
+                                        cat_map = {
+                                            "UNDER 5": ("DIGITUNDER", 5),
+                                            "OVER 4": ("DIGITOVER", 4),
+                                            "EVEN": ("DIGITEVEN", None),
+                                            "ODD": ("DIGITODD", None)
+                                        }
+                                        target_dir, barrier_val = cat_map.get(alert["category"], (None, None))
+                                        if target_dir:
+                                            asyncio.create_task(
+                                                trader_engine.execute_trade(
+                                                    symbol=sym,
+                                                    target_type=target_dir,
+                                                    barrier=barrier_val,
+                                                    quote=float(tick["quote"]),
+                                                    digits_1000=list(engine.buffer)
+                                                )
                                             )
-                                        )
-
                         elif "error" in data:
                             logger.error(f"Deriv API error: {data['error']}")
 

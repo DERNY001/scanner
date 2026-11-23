@@ -72,9 +72,9 @@ def check_market_stability(symbol: str, target_direction: str, digits_1000: List
 
     total_ticks = len(digits_1000)
     counts = {d: digits_1000.count(d) for d in range(10)}
-    percentages = {d: (cnt / total_ticks) * 100.0 for d, cnt in counts.items()}
+    percentages = {d: (cnt / (total_ticks / 100.0)) for d, cnt in counts.items()}
 
-    req_r1, req_r2, req_r3 = 11.9, 11.7, 11.4
+    req_r1, req_r2, req_r3 = 11.9, 11.7, 11.5
 
     if target_direction == "DIGITUNDER":
         favored_pcts = sorted([percentages[d] for d in range(5)], reverse=True)
@@ -82,13 +82,19 @@ def check_market_stability(symbol: str, target_direction: str, digits_1000: List
     elif target_direction == "DIGITOVER":
         favored_pcts = sorted([percentages[d] for d in range(5, 10)], reverse=True)
         opposite_pcts = [percentages[d] for d in range(5)]
+    elif target_direction == "DIGITEVEN":
+        favored_pcts = sorted([percentages[d] for d in [0, 2, 4, 6, 8]], reverse=True)
+        opposite_pcts = [percentages[d] for d in [1, 3, 5, 7, 9]]
+    elif target_direction == "DIGITODD":
+        favored_pcts = sorted([percentages[d] for d in [1, 3, 5, 7, 9]], reverse=True)
+        opposite_pcts = [percentages[d] for d in [0, 2, 4, 6, 8]]
     else:
         return False
 
     if favored_pcts[0] < req_r1 or favored_pcts[1] < req_r2 or favored_pcts[2] < req_r3:
         return False
 
-    if any(pct >= 10.0 for pct in opposite_pcts):
+    if any(pct >= 9.8 for pct in opposite_pcts):
         return False
 
     return True
@@ -101,30 +107,28 @@ def check_pullback_entry(target_direction: str, recent_digits: List[int]) -> boo
     
     # 1. Latest tick must be on the winning/favored side
     if target_direction == "DIGITUNDER":
-        if latest_tick >= 5:
-            return False
-        # Count consecutive opposite ticks (>= 5) right before the latest tick
-        opposite_count = 0
-        for digit in reversed(recent_digits[:-1]):
-            if digit >= 5:
-                opposite_count += 1
-            else:
-                break
-        return opposite_count >= 3
-
+        if latest_tick >= 5: return False
+        opposite_check = lambda d: d >= 5
     elif target_direction == "DIGITOVER":
-        if latest_tick <= 4:
-            return False
-        # Count consecutive opposite ticks (<= 4) right before the latest tick
-        opposite_count = 0
-        for digit in reversed(recent_digits[:-1]):
-            if digit <= 4:
-                opposite_count += 1
-            else:
-                break
-        return opposite_count >= 3
+        if latest_tick <= 4: return False
+        opposite_check = lambda d: d <= 4
+    elif target_direction == "DIGITEVEN":
+        if latest_tick % 2 != 0: return False
+        opposite_check = lambda d: d % 2 != 0
+    elif target_direction == "DIGITODD":
+        if latest_tick % 2 == 0: return False
+        opposite_check = lambda d: d % 2 == 0
+    else:
+        return False
 
-    return False
+    # Count consecutive opposite ticks right before the latest tick
+    opposite_count = 0
+    for digit in reversed(recent_digits[:-1]):
+        if opposite_check(digit):
+            opposite_count += 1
+        else:
+            break
+    return opposite_count >= 3
 
 def is_market_on_cooldown(symbol: str) -> bool:
     now = time.time()
@@ -165,8 +169,8 @@ class ExecutionEngine:
             "🚀 <b>DERIV TRADER: ACTIVE & RUNNING</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "• <b>Base Stake</b>: $0.35 (Martingale 2.0x)\n"
-            "• <b>Thresholds</b>: 11.9% / 11.7% / 11.4% (All Markets)\n"
-            "• <b>Opposite Cap</b>: Strict &lt; 10.0%\n"
+            "• <b>Thresholds</b>: 11.9% / 11.7% / 11.5% (All Markets)\n"
+            "• <b>Opposite Cap</b>: Strict &lt; 9.8%\n"
             "• <b>Entry Pattern</b>: ≥3 Opposite Pullback Ticks + 1 Winning Reversal Tick\n"
             "• <b>Cooldown</b>: 15m per Market\n"
             "• <b>Daily Heartbeat & Report</b>: Clock-Aligned at 12:00 AM EAT (21:00 UTC)\n"
@@ -228,7 +232,7 @@ class ExecutionEngine:
             writer = csv.writer(f)
             writer.writerow([
                 datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                symbol, contract_type, barrier, stake, result, exit_digit,
+                symbol, contract_type, barrier if barrier is not None else "", stake, result, exit_digit,
                 round(profit_loss, 4), round(live_balance, 2),
                 round(portfolios["A"].balance, 2),
                 round(portfolios["B"].balance, 2),
@@ -236,7 +240,7 @@ class ExecutionEngine:
                 round(portfolios["D"].balance, 2)
             ])
 
-    async def execute_trade(self, symbol: str, target_type: str, barrier: int, quote: float, digits_1000: List[int]):
+    async def execute_trade(self, symbol: str, target_type: str, barrier: Optional[int] = None, quote: float = 0.0, digits_1000: List[int] = None):
         logger.info(f"[TRADER] Alert received for {symbol} ({target_type} barrier {barrier}). Evaluating setup...")
 
         if not DERIV_TOKEN:
@@ -259,7 +263,7 @@ class ExecutionEngine:
             auth_res = json.loads(await ws.recv())
 
             if "error" in auth_res:
-                logger.error(f"[TRADER AUTH ERROR] Deriv authorization failed: {auth_res["error"]}")
+                logger.error(f"[TRADER AUTH ERROR] Deriv authorization failed: {auth_res.get('error')}")
                 return None
 
             if not auth_res["authorize"].get("is_virtual"):
@@ -321,20 +325,22 @@ class ExecutionEngine:
                 "currency": "USD",
                 "duration": 1,
                 "duration_unit": "t",
-                "symbol": symbol,
-                "barrier": str(barrier)
+                "symbol": symbol
             }
+            if barrier is not None:
+                proposal_req["barrier"] = str(barrier)
+
             await ws.send(json.dumps(proposal_req))
             prop_res = json.loads(await ws.recv())
             if "error" in prop_res:
-                logger.error(f"[TRADER PROPOSAL ERROR] {prop_res["error"]}")
+                logger.error(f"[TRADER PROPOSAL ERROR] {prop_res.get('error')}")
                 return None
 
             buy_req = {"buy": prop_res["proposal"]["id"], "price": round(self.current_stake, 2)}
             await ws.send(json.dumps(buy_req))
             buy_res = json.loads(await ws.recv())
             if "error" in buy_res:
-                logger.error(f"[TRADER BUY ERROR] {buy_res["error"]}")
+                logger.error(f"[TRADER BUY ERROR] {buy_res.get('error')}")
                 return None
 
             contract_id = buy_res["buy"]["contract_id"]
